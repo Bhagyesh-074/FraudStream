@@ -1,0 +1,43 @@
+# Dataset — too large for git
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Pytest
+.pytest_cache/
+
+# MLflow
+mlruns/
+
+
+
+# Documentation & Context Files
+CHANGELOG.md
+
+IMPLEMENTATION_WALKTHROUGH.md
+PROJECT_CONTEXT.md
