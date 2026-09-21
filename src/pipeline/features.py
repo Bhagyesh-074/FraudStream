@@ -1,31 +1,4 @@
-"""
-Feature engineering module for the FraudStream batch pipeline.
-
-This module is deliberately minimal for Phase 2. The most impactful
-features for fraud detection — transaction velocity, time-since-last,
-merchant-level aggregates — require streaming infrastructure and a feature
-store (Phases 3-4) to compute correctly without train/serve inconsistency.
-
-What Phase 2 includes:
-  - log_amount: log1p-transformed Amount (handled by cleaning.py)
-  - hour_of_day: daily cycle from Time (handled by cleaning.py)
-  - V1-V28: PCA features from the dataset provider (used as-is)
-
-What Phase 2 explicitly does NOT include (and why):
-  - Transaction velocity (txns/hour per cardholder): requires a streaming
-    window or feature store lookup. Engineering a fake version from the
-    static dataset would create train/serve inconsistency — the model would
-    learn from a feature computed over the full history, but at serving time
-    would only have a real-time window. Deferred to Phase 3-4.
-  - Time-since-last-transaction: same problem — requires per-cardholder
-    state tracking that doesn't exist in a batch CSV.
-  - Interaction features between top-effect-size features (V17*V14, etc.):
-    XGBoost is a tree-based model that naturally captures feature interactions
-    through splits. Adding explicit interaction terms would increase
-    dimensionality without a clear benefit and risk overfitting on the small
-    fraud class. If we see evidence of missed interactions in Phase 2's
-    evaluation, we can revisit.
-"""
+"""Feature matrix construction and chronological train/test split."""
 
 import pandas as pd
 import numpy as np
@@ -39,18 +12,7 @@ from src.pipeline.cleaning import (
 def build_feature_matrix(
     df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Build the feature matrix and target vector from raw data.
-
-    Applies the full cleaning pipeline, then selects the modeling columns.
-
-    Args:
-        df: Raw dataset with all original columns including Class.
-
-    Returns:
-        Tuple of (X, y):
-          X: DataFrame of feature columns (V1-V28, log_amount, hour_of_day)
-          y: Series of labels (Class: 0=legit, 1=fraud)
-    """
+    """Build feature matrix X (30 columns) and target vector y from dataset."""
     df_prepared = prepare_features(df)
     feature_cols = get_feature_columns()
     X = df_prepared[feature_cols]
@@ -62,25 +24,7 @@ def time_based_split(
     df: pd.DataFrame,
     train_fraction: float = 0.80,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split the dataset by time (chronological train/test split).
-
-    Since Time represents seconds since the first transaction, sorting by
-    Time and splitting gives a chronological split where the model trains
-    on earlier transactions and is tested on later ones — matching how
-    fraud detection works in production (you never see the future during
-    training).
-
-    This is more realistic than a random stratified split, though it may
-    result in slightly different fraud rates between train and test (which
-    is itself realistic — fraud patterns shift over time).
-
-    Args:
-        df: Raw dataset with a 'Time' column.
-        train_fraction: Fraction of data for training (default 0.80).
-
-    Returns:
-        Tuple of (train_df, test_df), both containing all original columns.
-    """
+    """Perform chronological train/test split sorted by Time column."""
     df_sorted = df.sort_values("Time", kind="mergesort").reset_index(drop=True)
     split_idx = int(len(df_sorted) * train_fraction)
     train_df = df_sorted.iloc[:split_idx].copy()
@@ -89,18 +33,7 @@ def time_based_split(
 
 
 def compute_scale_pos_weight(y_train: pd.Series) -> float:
-    """Compute XGBoost scale_pos_weight from the training set's actual ratio.
-
-    NOT hardcoded to 578 (Phase 1's full-dataset ratio). Computed from the
-    training split specifically, since the time-based split may yield a
-    slightly different ratio.
-
-    Args:
-        y_train: Training labels (0/1).
-
-    Returns:
-        n_legit / n_fraud from the training set.
-    """
+    """Compute scale_pos_weight (legit/fraud ratio) from training split."""
     n_fraud = int((y_train == 1).sum())
     n_legit = int((y_train == 0).sum())
     if n_fraud == 0:
@@ -109,18 +42,7 @@ def compute_scale_pos_weight(y_train: pd.Series) -> float:
 
 
 def split_report(train_df: pd.DataFrame, test_df: pd.DataFrame) -> str:
-    """Generate a detailed report of the train/test split.
-
-    Includes exact fraud counts (not just rates) and flags if test set
-    has too few frauds for reliable evaluation.
-
-    Args:
-        train_df: Training split with 'Class' column.
-        test_df: Test split with 'Class' column.
-
-    Returns:
-        Formatted report string.
-    """
+    """Generate train/test split report with class counts and size warnings."""
     train_fraud = int((train_df["Class"] == 1).sum())
     train_legit = int((train_df["Class"] == 0).sum())
     test_fraud = int((test_df["Class"] == 1).sum())
@@ -147,7 +69,6 @@ def split_report(train_df: pd.DataFrame, test_df: pd.DataFrame) -> str:
         f"Time range — Test:  [{test_df['Time'].min():.0f}, {test_df['Time'].max():.0f}]",
     ]
 
-    # Flag if test set has too few frauds for reliable evaluation
     FRAUD_COUNT_THRESHOLD = 80
     if test_fraud < FRAUD_COUNT_THRESHOLD:
         lines.extend([

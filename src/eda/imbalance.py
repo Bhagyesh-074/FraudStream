@@ -1,10 +1,4 @@
-"""
-Class imbalance diagnostics for the Credit Card Fraud dataset.
-
-Computes imbalance metrics and explains why standard accuracy is misleading
-for highly imbalanced fraud detection problems. Results are used to inform
-resampling/weighting strategy in Phase 2.
-"""
+"""Class imbalance diagnostics for fraud detection."""
 
 import pandas as pd
 import numpy as np
@@ -12,18 +6,7 @@ from typing import Any
 
 
 def compute_imbalance_ratio(df: pd.DataFrame) -> dict[str, Any]:
-    """Compute precise class imbalance metrics.
-
-    Returns:
-        Dict with:
-            n_fraud: number of fraud transactions
-            n_legit: number of legitimate transactions
-            n_total: total transactions
-            fraud_rate: fraud / total (as fraction)
-            fraud_rate_pct: fraud / total (as percentage)
-            imbalance_ratio: legit / fraud (e.g., 578:1)
-            scale_pos_weight: ratio suitable for XGBoost's scale_pos_weight
-    """
+    """Compute fraud vs legitimate class counts and imbalance ratio."""
     n_fraud = int((df["Class"] == 1).sum())
     n_legit = int((df["Class"] == 0).sum())
     n_total = len(df)
@@ -41,18 +24,7 @@ def compute_imbalance_ratio(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def naive_baseline_accuracy(df: pd.DataFrame) -> dict[str, Any]:
-    """Compute accuracy of a 'predict all legitimate' baseline.
-
-    This is the accuracy a model gets by always predicting Class=0.
-    In highly imbalanced datasets, this number is deceptively high.
-
-    Returns:
-        Dict with:
-            accuracy: fraction correct if always predicting Class=0
-            accuracy_pct: as percentage
-            n_correct: number of correct predictions (= n_legit)
-            n_wrong: number of wrong predictions (= n_fraud = all missed)
-    """
+    """Compute accuracy of a majority-class (always legitimate) baseline."""
     n_fraud = int((df["Class"] == 1).sum())
     n_legit = int((df["Class"] == 0).sum())
     n_total = len(df)
@@ -67,11 +39,7 @@ def naive_baseline_accuracy(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def diagnostic_report(df: pd.DataFrame) -> str:
-    """Generate a formatted diagnostic report on class imbalance.
-
-    Returns a multi-line string explaining the imbalance problem with
-    actual numbers from the dataset.
-    """
+    """Generate diagnostic report comparing imbalance against naive baseline."""
     imb = compute_imbalance_ratio(df)
     baseline = naive_baseline_accuracy(df)
 

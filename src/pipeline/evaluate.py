@@ -1,10 +1,4 @@
-"""
-Evaluation module for the FraudStream batch pipeline.
-
-Implements cost-based threshold selection using Phase 1's CostMatrix,
-AUC-PR as the primary metric, and slice-based evaluation for
-Amount bands and hour-of-day segments.
-"""
+"""Evaluation and cost-based thresholding module for FraudStream."""
 
 import numpy as np
 import pandas as pd
@@ -23,15 +17,7 @@ def compute_metrics(
     y_true: np.ndarray,
     y_prob: np.ndarray,
 ) -> dict[str, float]:
-    """Compute primary evaluation metrics.
-
-    Args:
-        y_true: True labels (0/1).
-        y_prob: Predicted probabilities of class 1 (fraud).
-
-    Returns:
-        Dict with auc_pr, auc_roc.
-    """
+    """Compute primary evaluation metrics (AUC-PR and AUC-ROC)."""
     auc_pr = average_precision_score(y_true, y_prob)
     auc_roc = roc_auc_score(y_true, y_prob)
     return {
@@ -46,28 +32,7 @@ def find_cost_optimal_threshold(
     cost_matrix: CostMatrix,
     n_thresholds: int = 1000,
 ) -> dict[str, Any]:
-    """Find the classification threshold that minimizes total business cost.
-
-    Sweeps thresholds from 0 to 1 in n_thresholds steps, computes the
-    confusion matrix and business cost at each, and returns the threshold
-    with the lowest total cost.
-
-    This is the core connection between Phase 1's cost matrix and Phase 2's
-    model output. Instead of optimizing F1 or accuracy, we optimize
-    directly for business cost.
-
-    Args:
-        y_true: True labels (0/1).
-        y_prob: Predicted probabilities of fraud.
-        cost_matrix: Phase 1's CostMatrix instance (calibrated).
-        n_thresholds: Number of thresholds to evaluate.
-
-    Returns:
-        Dict with:
-          optimal_threshold, min_cost, confusion_matrix at optimal,
-          cost_at_default_05, all_thresholds (for plotting),
-          all_costs (for plotting).
-    """
+    """Find classification threshold that minimizes total business cost."""
     thresholds = np.linspace(0.0, 1.0, n_thresholds + 1)
     costs = []
 
@@ -88,14 +53,12 @@ def find_cost_optimal_threshold(
     best_threshold = float(thresholds[best_idx])
     min_cost = float(costs[best_idx])
 
-    # Compute confusion matrix at optimal threshold
     y_pred_optimal = (y_prob_arr >= best_threshold).astype(int)
     tp = int(((y_pred_optimal == 1) & (y_true_arr == 1)).sum())
     fp = int(((y_pred_optimal == 1) & (y_true_arr == 0)).sum())
     fn = int(((y_pred_optimal == 0) & (y_true_arr == 1)).sum())
     tn = int(((y_pred_optimal == 0) & (y_true_arr == 0)).sum())
 
-    # Cost at default 0.5 threshold for comparison
     idx_05 = int(n_thresholds * 0.5)
     cost_at_05 = float(costs[idx_05])
 
@@ -120,17 +83,7 @@ def confusion_at_threshold(
     threshold: float,
     cost_matrix: CostMatrix,
 ) -> dict[str, Any]:
-    """Compute full confusion matrix and cost at a specific threshold.
-
-    Args:
-        y_true: True labels.
-        y_prob: Predicted probabilities.
-        threshold: Classification threshold.
-        cost_matrix: Calibrated CostMatrix.
-
-    Returns:
-        Dict with tp, fp, fn, tn, precision, recall, f1, and cost breakdown.
-    """
+    """Compute confusion matrix and business cost at a specific threshold."""
     y_true_arr = np.asarray(y_true)
     y_prob_arr = np.asarray(y_prob)
     y_pred = (y_prob_arr >= threshold).astype(int)
@@ -143,7 +96,6 @@ def confusion_at_threshold(
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
     cost_result = cost_matrix.compute_expected_cost(tp, fp, fn, tn)
 
     return {
@@ -165,28 +117,13 @@ def slice_evaluation(
     threshold: float,
     cost_matrix: CostMatrix,
 ) -> dict[str, Any]:
-    """Evaluate model performance across data slices.
-
-    Slices:
-      - Amount bands: [0, 10), [10, 50), [50, 200), [200, 1000), [1000+]
-      - Hour of day bands: [0-6), [6-12), [12-18), [18-24)
-
-    Args:
-        df_test: Test DataFrame (must contain 'Amount', 'hour_of_day', 'Class').
-        y_prob: Predicted probabilities aligned with df_test.
-        threshold: Classification threshold.
-        cost_matrix: Calibrated CostMatrix.
-
-    Returns:
-        Dict with 'by_amount' and 'by_hour' slice results.
-    """
+    """Evaluate performance sliced across Amount tiers and hour-of-day windows."""
     y_true = np.asarray(df_test["Class"])
     y_prob_arr = np.asarray(y_prob)
     y_pred = (y_prob_arr >= threshold).astype(int)
 
     results = {"by_amount": [], "by_hour": []}
 
-    # Amount bands
     amount_bins = [(0, 10), (10, 50), (50, 200), (200, 1000), (1000, float("inf"))]
     amount_labels = ["$0-10", "$10-50", "$50-200", "$200-1K", "$1K+"]
 
@@ -213,7 +150,6 @@ def slice_evaluation(
             "recall": recall,
         })
 
-    # Hour-of-day bands
     if "hour_of_day" in df_test.columns:
         hour_bins = [(0, 6), (6, 12), (12, 18), (18, 24)]
         hour_labels = ["00:00-06:00", "06:00-12:00", "12:00-18:00", "18:00-24:00"]
@@ -253,20 +189,7 @@ def format_evaluation_report(
     y_true: np.ndarray | None = None,
     y_prob: np.ndarray | None = None,
 ) -> str:
-    """Format a complete evaluation report with all findings.
-
-    Args:
-        metrics: Output of compute_metrics().
-        threshold_result: Output of find_cost_optimal_threshold().
-        slices: Output of slice_evaluation().
-        cost_matrix: Calibrated CostMatrix.
-        candidate_thresholds: Optional list of thresholds to show cost at.
-        y_true: True labels (needed if candidate_thresholds provided).
-        y_prob: Predicted probabilities (needed if candidate_thresholds provided).
-
-    Returns:
-        Formatted multi-line report string.
-    """
+    """Format full evaluation report with threshold metrics and slices."""
     lines = [
         "EVALUATION REPORT",
         "=" * 70,
@@ -297,7 +220,6 @@ def format_evaluation_report(
         f"  Total:   ${threshold_result['min_cost']:>12,.2f}",
     ]
 
-    # Cost at candidate thresholds for walkthrough comparison
     if candidate_thresholds and y_true is not None and y_prob is not None:
         lines.extend(["", "COST AT CANDIDATE THRESHOLDS (for comparison)", "-" * 40])
         for t in candidate_thresholds:
@@ -309,7 +231,6 @@ def format_evaluation_report(
                 f"Cost=${result['total_cost']:>12,.2f}"
             )
 
-    # Slice evaluation
     lines.extend(["", "SLICE EVALUATION: BY AMOUNT BAND", "-" * 40])
     for s in slices.get("by_amount", []):
         lines.append(
@@ -338,24 +259,7 @@ def bootstrap_auc_pr_comparison(
     n_bootstraps: int = 1000,
     random_state: int = 42,
 ) -> dict[str, Any]:
-    """Compare AUC-PR between two models using paired bootstrap resampling.
-
-    Resamples test set predictions with replacement n_bootstraps times.
-    On each resample, evaluates AUC-PR for both models and computes their
-    paired difference (score_a - score_b).
-
-    Args:
-        y_true: True binary labels (0/1).
-        y_prob_a: Predicted probabilities from model A.
-        y_prob_b: Predicted probabilities from model B.
-        name_a: Display name for model A.
-        name_b: Display name for model B.
-        n_bootstraps: Number of bootstrap iterations (default: 1000).
-        random_state: Random seed for exact reproducibility.
-
-    Returns:
-        Dict with comprehensive statistics and raw per-iteration scores.
-    """
+    """Compare AUC-PR between two models using paired bootstrap resampling."""
     rng = np.random.default_rng(random_state)
     y_true_arr = np.asarray(y_true)
     prob_a_arr = np.asarray(y_prob_a)
@@ -366,13 +270,10 @@ def bootstrap_auc_pr_comparison(
     scores_b = np.empty(n_bootstraps, dtype=float)
 
     for i in range(n_bootstraps):
-        # Sample indices with replacement
         idx = rng.choice(n_samples, size=n_samples, replace=True)
         y_boot = y_true_arr[idx]
 
-        # Guard against zero-positive resample (probability is negligible on 56k rows, but mathematically sound)
         if y_boot.sum() == 0:
-            # Resample until at least one positive is drawn
             while y_boot.sum() == 0:
                 idx = rng.choice(n_samples, size=n_samples, replace=True)
                 y_boot = y_true_arr[idx]
@@ -399,7 +300,6 @@ def bootstrap_auc_pr_comparison(
     stats_b["name"] = name_b
     stats_diff = _stats(diffs)
 
-    # Statistical significance: does the 95% CI of diff span across 0?
     statistically_significant = bool(
         (stats_diff["ci_lower"] > 0 and stats_diff["ci_upper"] > 0)
         or (stats_diff["ci_lower"] < 0 and stats_diff["ci_upper"] < 0)

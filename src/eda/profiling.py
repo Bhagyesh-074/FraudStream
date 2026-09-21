@@ -1,11 +1,4 @@
-"""
-Statistical profiling for the Credit Card Fraud dataset.
-
-Provides functions for loading data, computing distribution statistics,
-and comparing fraud vs legitimate transaction profiles. All analysis
-functions return plain data structures (dicts, DataFrames) for testability
-and reuse by run_eda.py and downstream phases.
-"""
+"""Statistical profiling for the Credit Card Fraud dataset."""
 
 import pandas as pd
 import numpy as np
@@ -17,32 +10,16 @@ from src.eda.download_data import DEFAULT_CSV_PATH
 
 
 def load_dataset(path: Path = DEFAULT_CSV_PATH) -> pd.DataFrame:
-    """Load the credit card fraud dataset from CSV.
-
-    Args:
-        path: Path to creditcard.csv.
-
-    Returns:
-        DataFrame with all columns (Time, V1-V28, Amount, Class).
-
-    Raises:
-        FileNotFoundError: If the CSV file does not exist at the given path.
-    """
+    """Load credit card fraud dataset from CSV."""
     if not path.is_file():
         raise FileNotFoundError(
-            f"Dataset not found at {path}. "
-            f"See README.md for download instructions."
+            f"Dataset not found at {path}. See README.md for download instructions."
         )
     return pd.read_csv(path)
 
 
 def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
-    """Compute basic dataset summary statistics.
-
-    Returns:
-        Dict with keys: n_rows, n_cols, n_fraud, n_legit, fraud_rate,
-        dtypes (dict), null_counts (dict), columns (list).
-    """
+    """Compute summary counts, nulls, and data types."""
     n_fraud = int((df["Class"] == 1).sum())
     n_legit = int((df["Class"] == 0).sum())
     n_rows, n_cols = df.shape
@@ -61,16 +38,8 @@ def dataset_summary(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def statistical_profile(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute distribution statistics for all numeric features.
-
-    For each feature, computes: mean, std, median, min, max, skewness,
-    kurtosis, and select percentiles.
-
-    Returns:
-        DataFrame indexed by feature name with stat columns.
-    """
+    """Compute distribution statistics for all numeric features."""
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    # Exclude Class from profiling (it's a label, not a feature)
     feature_cols = [c for c in numeric_cols if c != "Class"]
 
     records = []
@@ -97,21 +66,14 @@ def statistical_profile(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fraud_vs_legit_comparison(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Compare statistical profiles of fraud vs legitimate transactions.
-
-    Returns:
-        Dict with keys 'fraud' and 'legit', each a profile DataFrame,
-        plus 'diff' with the mean difference (fraud - legit) for each feature.
-    """
+    """Compare statistical profiles between fraud and legitimate transactions."""
     fraud_df = df[df["Class"] == 1]
     legit_df = df[df["Class"] == 0]
 
     fraud_profile = statistical_profile(fraud_df)
     legit_profile = statistical_profile(legit_df)
 
-    # Mean difference highlights which features diverge most between classes
     mean_diff = fraud_profile["mean"] - legit_profile["mean"]
-    # Normalized by legit std to show effect size
     legit_std = legit_profile["std"].replace(0, np.nan)
     effect_size = mean_diff / legit_std
 
@@ -132,35 +94,21 @@ def fraud_vs_legit_comparison(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def amount_outlier_analysis(df: pd.DataFrame) -> dict[str, Any]:
-    """Analyze Amount outliers with explicit reasoning about signal vs noise.
-
-    Computes IQR-based and percentile-based outlier thresholds, then
-    compares fraud rates among outliers vs non-outliers to determine
-    whether extreme amounts are plausible fraud signal or data error.
-
-    Returns:
-        Dict with outlier thresholds, counts, fraud rates by group,
-        and a reasoning string.
-    """
+    """Analyze Amount outliers and compare fraud rates across groups."""
     amount = df["Amount"]
 
-    # IQR method
     q1 = amount.quantile(0.25)
     q3 = amount.quantile(0.75)
     iqr = q3 - q1
     lower_fence = q1 - 1.5 * iqr
     upper_fence = q3 + 1.5 * iqr
 
-    # Percentile method
     p99 = amount.quantile(0.99)
     p999 = amount.quantile(0.999)
 
-    # Identify outliers (IQR upper fence — lower fence is typically 0 for
-    # Amount since Q1 is often small)
     is_outlier_iqr = amount > upper_fence
     is_extreme = amount > p99
 
-    # Fraud rates among outlier groups
     n_outlier_iqr = int(is_outlier_iqr.sum())
     n_extreme = int(is_extreme.sum())
 
@@ -175,11 +123,9 @@ def amount_outlier_analysis(df: pd.DataFrame) -> dict[str, Any]:
     )
     overall_fraud_rate = df["Class"].mean()
 
-    # Fraud-specific amount stats
     fraud_amounts = df.loc[df["Class"] == 1, "Amount"]
     legit_amounts = df.loc[df["Class"] == 0, "Amount"]
 
-    # Build reasoning
     reasoning_parts = [
         "AMOUNT OUTLIER ANALYSIS — Signal vs Data Error Assessment",
         "=" * 60,
@@ -200,16 +146,8 @@ def amount_outlier_analysis(df: pd.DataFrame) -> dict[str, Any]:
         f"max: {legit_amounts.max():.2f}, std: {legit_amounts.std():.2f}",
         "",
         "REASONING:",
-        "  - Credit card transactions naturally span a wide range ($0.01 to",
-        "    thousands), so high-Amount transactions are not inherently erroneous.",
-        "  - If outlier fraud rate is HIGHER than baseline, extreme amounts are",
-        "    correlated with fraud and are useful signal — do not remove.",
-        "  - If outlier fraud rate is SIMILAR or LOWER, extreme amounts are just",
-        "    large legitimate purchases — still not data errors, just noise.",
-        "  - Either way, Amount outliers in credit card data are plausible real",
-        "    transactions, not data entry errors. The key question for Phase 2",
-        "    is whether to scale/clip Amount for model stability, not whether",
-        "    to drop outlier rows.",
+        "  - Amount outliers in credit card data represent real high-value transactions,",
+        "    not measurement errors; scaling/clipping is preferred over dropping rows.",
     ]
 
     return {
