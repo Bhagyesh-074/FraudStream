@@ -1,5 +1,5 @@
-# Dataset — too large for git
-data/
+# Raw streaming data zone (untracked)
+/data/raw_zone/
 
 # Python
 __pycache__/
@@ -33,11 +33,11 @@ Thumbs.db
 
 # MLflow
 mlruns/
+mlflow.db
+mlflow.db-journal
+
+# DVC local remotes
+dvc_remote/
+.dvc_remote/
 
 
-
-# Documentation & Context Files
-CHANGELOG.md
-
-IMPLEMENTATION_WALKTHROUGH.md
-PROJECT_CONTEXT.md

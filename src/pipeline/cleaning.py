@@ -3,10 +3,12 @@
 from typing import Any
 import numpy as np
 import pandas as pd
-
-PCA_FEATURES = [f"V{i}" for i in range(1, 29)]
-ENGINEERED_FEATURES = ["log_amount", "hour_of_day"]
-ALL_FEATURE_COLUMNS = PCA_FEATURES + ENGINEERED_FEATURES
+from src.features.feature_logic import (
+    PCA_FEATURES,
+    ENGINEERED_FEATURES,
+    FEATURE_COLUMNS as ALL_FEATURE_COLUMNS,
+    compute_features,
+)
 
 
 def validate_no_nulls(df: pd.DataFrame) -> pd.DataFrame:
@@ -46,11 +48,16 @@ def confirm_pca_features_prescaled(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Run data validation, Amount log1p, and hour_of_day engineering."""
-    return engineer_time(transform_amount(validate_no_nulls(df)))
+    """Prepare dataframe by applying shared feature computation logic."""
+    feats = compute_features(df)
+    df_out = df.copy()
+    df_out["log_amount"] = feats["log_amount"]
+    df_out["hour_of_day"] = feats["hour_of_day"]
+    return df_out
 
 
 def get_feature_columns() -> list[str]:
     """Return list of 30 feature column names used for model training."""
     return ALL_FEATURE_COLUMNS.copy()
+
 

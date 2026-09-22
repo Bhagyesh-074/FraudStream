@@ -1,0 +1,8 @@
+{
+  "optimal_threshold": 0.031,
+  "auc_pr": 0.7995861951404674,
+  "model_name": "XGBoost Baseline",
+  "precision_at_threshold": 0.5648148148148148,
+  "recall_at_threshold": 0.8133333333333334,
+  "training_timestamp": "2026-09-22T08:31:52.712305+00:00"
+}

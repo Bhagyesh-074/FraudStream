@@ -1,13 +1,14 @@
 """Feature matrix construction and chronological train/test split."""
 
 import pandas as pd
-from src.pipeline.cleaning import prepare_features, ALL_FEATURE_COLUMNS, get_feature_columns
+from src.features.feature_logic import compute_features, FEATURE_COLUMNS as ALL_FEATURE_COLUMNS
+from src.pipeline.cleaning import prepare_features, get_feature_columns
 
 
 def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """Build feature matrix X (30 columns) and target vector y from dataset."""
-    df_prepared = prepare_features(df)
-    return df_prepared[ALL_FEATURE_COLUMNS], df_prepared["Class"]
+    """Build feature matrix X (30 columns) and target vector y from dataset using shared logic."""
+    return compute_features(df), df["Class"]
+
 
 
 def time_based_split(

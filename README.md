@@ -4,9 +4,15 @@
 
 Demonstrates pandas/scikit-learn/NumPy fluency, business-driven cost-based evaluation, statistical rigor in data cleaning, and communication clarity.
 
-## Current Status: Phase 1 — EDA Foundations
+## Current Status: Phase 6 Complete (Ready for Phase 7)
 
-Completed: Exploratory data analysis, statistical profiling, cost matrix definition, class imbalance diagnostics.
+Completed:
+- **Phase 1**: Exploratory data analysis, statistical profiling, cost matrix calibration, class imbalance diagnostics.
+- **Phase 2**: Chronological batch pipeline, feature engineering, XGBoost baseline vs Autoencoder ensemble, cost-optimal thresholding.
+- **Phase 3**: Real-time Kafka streaming (KRaft mode), replay producer, raw Parquet lake consumer with time-based partitioning.
+- **Phase 4**: Shared feature store with zero train/serve skew proof (bit-for-bit parity), versioned Parquet feature tables.
+- **Phase 5**: Real-time scoring consumer on `transactions-raw` topic, FastAPI observability plane, honest side-by-side held-out test fraud verification.
+- **Phase 6**: DVC data & feature versioning with content-addressable storage, MLflow Model Registry promotion gating, 4-tier lineage reproducibility audit.
 
 ## Quick Start
 
@@ -73,11 +79,11 @@ python -m pytest tests/ -v
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **Phase 1** | EDA, statistical profiling, cost matrix, imbalance diagnostics | **Complete** |
-| Phase 2 | Batch pipeline — cleaning, feature engineering, training, evaluation | Planned |
-| Phase 3 | Kafka producer + raw Parquet zone consumer | Planned |
-| Phase 4 | Feature store (versioned Parquet) + train/serve consistency | Planned |
-| Phase 5 | Real-time FastAPI + Kafka consumer scoring service | Planned |
-| Phase 6 | DVC + MLflow Model Registry promotion gating | Planned |
+| **Phase 2** | Batch pipeline — cleaning, feature engineering, training, evaluation | **Complete** |
+| **Phase 3** | Kafka producer + raw Parquet zone consumer | **Complete** |
+| **Phase 4** | Feature store (versioned Parquet) + train/serve consistency | **Complete** |
+| **Phase 5** | Real-time FastAPI + Kafka consumer scoring service | **Complete** |
+| **Phase 6** | DVC + MLflow Model Registry promotion gating | **Complete** |
 | Phase 7 | Airflow orchestration + Evidently monitoring, drift-triggered retrain | Planned |
 
 ## Repository Structure
