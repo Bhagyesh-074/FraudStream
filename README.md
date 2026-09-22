@@ -105,11 +105,8 @@ FraudStream/
     test_cost_matrix.py           # Cost matrix validation tests
     test_imbalance.py             # Imbalance diagnostic tests
   notebooks/                      # Exploratory work (optional)
-  requirements.txt                # Phase 1 dependencies
+  requirements.txt                # Project dependencies
   README.md                       # This file
-  PROJECT_CONTEXT.md              # Project purpose + architecture context
-  CHANGELOG.md                    # Indexed change log
-  IMPLEMENTATION_WALKTHROUGH.md   # Textbook-style learning walkthrough
   .gitignore
 ```
 
@@ -121,5 +118,3 @@ FraudStream/
 - **Cost matrix**: FN=$122.21 (missed fraud), FP=$10.00 (customer friction), ratio 12.2:1
 - **Top discriminating features**: V17, V14, V12, V10, V16 (by effect size)
 - **Amount outliers**: Higher fraud rate among outliers (0.29% vs 0.16%) — signal, not noise
-
-See [IMPLEMENTATION_WALKTHROUGH.md](IMPLEMENTATION_WALKTHROUGH.md) for the full reasoning behind each finding.

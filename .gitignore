@@ -40,4 +40,9 @@ mlflow.db-journal
 dvc_remote/
 .dvc_remote/
 
+# Documentation & Context Files (internal)
+CHANGELOG.md
+IMPLEMENTATION_WALKTHROUGH.md
+PROJECT_CONTEXT.md
+
 
