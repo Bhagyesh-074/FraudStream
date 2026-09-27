@@ -44,5 +44,6 @@ dvc_remote/
 CHANGELOG.md
 IMPLEMENTATION_WALKTHROUGH.md
 PROJECT_CONTEXT.md
-
-
+# Generated Reports & Internal Docs
+reports/*.html
+docs/

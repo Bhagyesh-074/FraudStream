@@ -1,0 +1,10 @@
+FROM apache/airflow:2.9.1
+
+USER airflow
+
+# Install project dependencies dynamically from requirements.txt,
+# excluding heavy TensorFlow (champion production model is XGBoost; 
+# eliminates 500MB neural net build overhead).
+COPY requirements.txt /tmp/requirements.txt
+RUN grep -v "tensorflow" /tmp/requirements.txt > /tmp/requirements.airflow.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.airflow.txt

@@ -1,120 +1,245 @@
 # FraudStream
 
-**Industry-style end-to-end fraud detection pipeline** — built for a Data Scientist role application (v4c.ai).
+Real-time credit card fraud detection system featuring Kafka event streaming, low-latency XGBoost scoring (<10ms), partitioned Parquet data lake ingestion, Evidently drift detection, and automated Airflow retraining with MLflow Model Registry promotion gating.
 
-Demonstrates pandas/scikit-learn/NumPy fluency, business-driven cost-based evaluation, statistical rigor in data cleaning, and communication clarity.
+---
 
-## Current Status: Phase 6 Complete (Ready for Phase 7)
+## Architecture Overview
 
-Completed:
-- **Phase 1**: Exploratory data analysis, statistical profiling, cost matrix calibration, class imbalance diagnostics.
-- **Phase 2**: Chronological batch pipeline, feature engineering, XGBoost baseline vs Autoencoder ensemble, cost-optimal thresholding.
-- **Phase 3**: Real-time Kafka streaming (KRaft mode), replay producer, raw Parquet lake consumer with time-based partitioning.
-- **Phase 4**: Shared feature store with zero train/serve skew proof (bit-for-bit parity), versioned Parquet feature tables.
-- **Phase 5**: Real-time scoring consumer on `transactions-raw` topic, FastAPI observability plane, honest side-by-side held-out test fraud verification.
-- **Phase 6**: DVC data & feature versioning with content-addressable storage, MLflow Model Registry promotion gating, 4-tier lineage reproducibility audit.
+```mermaid
+flowchart TD
+    Data[Kaggle Credit Card Transactions] --> Producer[Kafka Producer]
+    Producer -->|Topic: transactions-raw| Broker[Apache Kafka Broker :9092]
+    
+    Broker -->|Consumer Group: raw-consumer| RawSink[Parquet Raw Zone<br/>date=YYYY-MM-DD/hour=HH/]
+    Broker -->|Consumer Group: scoring-group| Scorer[Real-Time Scoring Engine<br/>Shared Feature Logic + XGBoost]
+    
+    Scorer -->|Topic: transactions-scored| ScoredTopic[Kafka Topic: transactions-scored]
+    Scorer --> API[FastAPI Telemetry Service :8000<br/>/health, /stats, /recent]
+    
+    FeatureStore[(Parquet Feature Store<br/>features_v1.parquet)] -.-> Scorer
+    FeatureStore -.-> DriftDetector[Evidently Drift Detector<br/>KS-Test & Wasserstein]
+    
+    DriftDetector -->|Drift Alert| Airflow[Apache Airflow DAG :8080]
+    Airflow --> Retrain[Retrain Candidate Model]
+    Retrain --> Gate{Promotion Gate<br/>AUC-PR > Prod + 1e-4}
+    Gate -->|Pass| MLflowProd[MLflow Registry :Production]
+    Gate -->|Fail / Tie| MLflowStaging[MLflow Registry :Staging]
+```
 
-## Quick Start
+---
 
-### 1. Prerequisites
+## Operating Parameters & Performance
 
-- Python 3.12+
-- pip
+| Parameter / Metric | Value | Description |
+|---|---|---|
+| **Dataset Size** | 284,807 records | Kaggle Credit Card Fraud dataset (492 frauds, 0.172% prevalence) |
+| **Hold-out Test Size** | 56,962 records | Chronological 20% hold-out split containing 75 fraud cases |
+| **Model Champion** | XGBoost | Trained with `scale_pos_weight=577.88` on training split |
+| **Test AUC-PR** | `0.7996` | Area Under the Precision-Recall Curve |
+| **Test AUC-ROC** | `0.9782` | Area Under the Receiver Operating Characteristic Curve |
+| **Decision Threshold** | `0.0310` | Calibrated against cost matrix ($122.21 FN cost vs. $10.00 FP friction) |
+| **Test Recall @ 0.031** | `81.33%` | 61 of 75 fraudulent transactions caught |
+| **Test Precision @ 0.031** | `56.48%` | 61 true positives, 47 false positives |
+| **Expected Cost @ 0.031** | `$2,180.96` | 76.2% reduction in business losses vs default 0.50 threshold ($9,165.75) |
+| **Scoring Latency (p50)** | `7.17 ms` | Kafka read + feature transform + XGBoost prediction |
+| **Scoring Latency (p95)** | `8.21 ms` | Under continuous streaming load |
+| **Promotion Delta ($\epsilon$)** | `1e-4` (0.0001) | Minimum AUC-PR improvement required to promote over active champion |
+| **Key Drift Anchors** | `V17, V14, V12, V10, V16` | Top discriminating features monitored for distribution shifts |
 
-### 2. Install Dependencies
+---
 
+## Prerequisites
+
+- **Python**: 3.12+
+- **Docker & Docker Compose** (for Kafka, Postgres, and Airflow)
+- **Dataset**: `creditcard.csv` (~150MB) from [Kaggle Credit Card Fraud Detection](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
+
+---
+
+## Setup
+
+### 1. Clone & Python Environment
 ```bash
+git clone https://github.com/Bhagyesh-074/FraudStream.git
+cd FraudStream
+python -m venv venv
+# Linux / macOS:
+source venv/bin/activate
+# Windows:
+.\venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### 3. Download the Dataset
+### 2. Dataset Setup
+Download `creditcard.csv` from Kaggle and place it inside the `data/` folder:
+```
+data/
+  creditcard.csv
+```
+*(Verify integrity with `dvc status` or pull tracked artifacts via `dvc pull` if configured).*
 
-This project uses the **Kaggle Credit Card Fraud Detection** dataset.
-
-**Manual download steps:**
-
-1. Go to: [https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
-2. Click **"Download"** (requires a free Kaggle account — sign up at [kaggle.com](https://www.kaggle.com) if needed)
-3. Extract the downloaded ZIP file
-4. Place `creditcard.csv` in the `data/` directory:
-   ```
-   FraudStream/
-     data/
-       creditcard.csv    <-- place here
-   ```
-
-**Expected file details:**
-- Filename: `creditcard.csv`
-- Size: ~150 MB
-- Shape: 284,807 rows × 31 columns
-- Columns: `Time`, `V1`–`V28` (PCA-transformed features), `Amount`, `Class` (0=legitimate, 1=fraud)
-- Fraud rate: 0.1727% (492 out of 284,807 transactions)
-
-> **Note:** The `data/` directory is gitignored. The dataset is not included in the repository.
-
-### 4. Run EDA
-
+### 3. Start Infrastructure
+Start the Kafka broker, PostgreSQL metadata database, and Airflow orchestrator:
 ```bash
-python -m src.eda.run_eda
+docker compose up -d
+```
+Verify running containers:
+```bash
+docker compose ps
 ```
 
-This runs the full Phase 1 analysis pipeline:
-- Dataset summary and validation
-- Statistical profiling of all features
-- Fraud vs legitimate distribution comparison
-- Amount outlier analysis
-- Cost matrix calibration
-- Class imbalance diagnostics
+---
 
-Results are printed to stdout and saved to `data/eda_results.json`.
+## Running the Components
 
-### 5. Run Tests
-
+### 1. Train Baseline Model & Calibrate Threshold
+Generates the versioned feature store (`data/feature_store/features_v1.parquet`), trains the XGBoost baseline, calibrates the cost-optimal threshold (0.031), logs the experiment run to MLflow (`sqlite:///mlflow.db`), and saves the champion model to `models/xgboost_baseline.json`:
 ```bash
-python -m pytest tests/ -v
+python -m src.pipeline.train
 ```
 
-## Project Architecture (Full Plan)
+### 2. Stream Transactions to Kafka
+Replays transactions in chronological order to the `transactions-raw` topic:
+```bash
+# Stream continuously with 10ms delay between messages
+python -m src.streaming.producer --delay 0.01
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| **Phase 1** | EDA, statistical profiling, cost matrix, imbalance diagnostics | **Complete** |
-| **Phase 2** | Batch pipeline — cleaning, feature engineering, training, evaluation | **Complete** |
-| **Phase 3** | Kafka producer + raw Parquet zone consumer | **Complete** |
-| **Phase 4** | Feature store (versioned Parquet) + train/serve consistency | **Complete** |
-| **Phase 5** | Real-time FastAPI + Kafka consumer scoring service | **Complete** |
-| **Phase 6** | DVC + MLflow Model Registry promotion gating | **Complete** |
-| Phase 7 | Airflow orchestration + Evidently monitoring, drift-triggered retrain | Planned |
+# Or replay a specific batch (e.g. 5,000 transactions)
+python -m src.streaming.producer --limit 5000 --delay 0.005
+```
 
-## Repository Structure
+### 3. Ingest Raw Transactions to Parquet Lake
+In a separate terminal, run the raw consumer to partition incoming transactions into time-stamped Parquet files (`data/raw_zone/date=YYYY-MM-DD/hour=HH/`):
+```bash
+python -m src.streaming.raw_consumer --batch-size 500
+```
+
+### 4. Real-Time Scoring Consumer
+In a separate terminal, consume from `transactions-raw`, calculate features, run inference using the champion model, and publish scored records with fraud probabilities to `transactions-scored`:
+```bash
+python -m src.serving.scoring_consumer
+```
+
+### 5. Observability & Telemetry API
+Run the FastAPI service to monitor throughput, latency percentiles, and scored records:
+```bash
+uvicorn src.serving.api:app --host 0.0.0.0 --port 8000
+```
+*(Alternatively, run `python -m src.serving.api` to run both the scoring consumer and the FastAPI server in one process).*
+
+#### Endpoints & Sample Responses
+- **Health Check** (`GET /health`):
+  ```bash
+  curl http://localhost:8000/health
+  ```
+  ```json
+  {
+    "status": "healthy",
+    "model_loaded": true,
+    "threshold": 0.031,
+    "model_source": "registry"
+  }
+  ```
+- **Throughput & Latency Stats** (`GET /stats`):
+  ```bash
+  curl http://localhost:8000/stats
+  ```
+  ```json
+  {
+    "total_scored": 12500,
+    "total_flagged": 21,
+    "flag_rate": 0.00168,
+    "latency_ms": {
+      "mean": 7.34,
+      "p50": 7.17,
+      "p95": 8.21,
+      "p99": 11.45,
+      "min": 4.82,
+      "max": 18.90
+    },
+    "uptime_seconds": 128.4
+  }
+  ```
+- **Recent Scored Events** (`GET /recent?n=3`):
+  ```bash
+  curl http://localhost:8000/recent?n=3
+  ```
+
+### 6. Feature Drift Monitoring
+Run Evidently drift detection between baseline training distributions and current transactions (evaluates KS-test, Wasserstein distance, and top-5 discriminatory features `V17, V14, V12, V10, V16`):
+```bash
+python -m src.monitoring.drift_detector
+```
+An interactive HTML drift report is generated at `reports/data_drift_report.html`.
+
+### 7. Airflow Orchestration & Retraining DAG
+Access the Airflow web interface at [http://localhost:8080](http://localhost:8080) (Username: `airflow`, Password: `airflow`).
+
+To execute DAG runs directly via CLI:
+- **Scheduled Drift Check (No Drift -> Retraining Skipped)**:
+  ```bash
+  docker compose exec airflow-webserver airflow dags test fraudstream_retrain_dag 2026-09-01
+  ```
+- **Drift-Triggered Retraining & Promotion Evaluation**:
+  ```bash
+  docker compose exec -e DRIFT_TRIGGER_TEST=1 airflow-webserver airflow dags test fraudstream_retrain_dag 2026-09-02
+  ```
+  *Note: A newly retrained candidate is only promoted to `Production` in the MLflow Model Registry if its AUC-PR exceeds the current production champion by more than 0.0001 (1e-4). Retraining runs on identical distributions or floating-point ties remain in `Staging`.*
+
+---
+
+## Test Suite
+
+Run the full automated test suite (135 tests covering EDA, feature logic, streaming, scoring, model registry gating, and drift monitoring):
+```bash
+pytest tests/ -v
+```
+
+---
+
+## Service Endpoints & Ports
+
+| Service | Port | Description |
+|---|---|---|
+| **FastAPI Telemetry** | `8000` | Real-time health, statistics, and prediction ring buffer |
+| **Apache Airflow Web UI** | `8080` | Pipeline orchestration UI (`airflow` / `airflow`) |
+| **Apache Kafka** | `9092` | Event broker (`transactions-raw`, `transactions-scored`) |
+| **PostgreSQL** | `5432` | Metadata store for Airflow |
+| **MLflow Tracking** | Embedded | Local SQLite tracking store (`sqlite:///mlflow.db`) |
+
+---
+
+## Project Structure
 
 ```
 FraudStream/
-  data/                           # Raw dataset (gitignored)
-    creditcard.csv                # Kaggle Credit Card Fraud dataset
-    eda_results.json              # Computed EDA statistics
-  src/
-    eda/
-      download_data.py            # Dataset existence check + instructions
-      profiling.py                # Statistical profiling functions
-      cost_matrix.py              # Business cost matrix definition
-      imbalance.py                # Class imbalance diagnostics
-      run_eda.py                  # Full EDA runner script
-  tests/
-    test_profiling.py             # Dataset shape/integrity tests
-    test_cost_matrix.py           # Cost matrix validation tests
-    test_imbalance.py             # Imbalance diagnostic tests
-  notebooks/                      # Exploratory work (optional)
-  requirements.txt                # Project dependencies
-  README.md                       # This file
-  .gitignore
+├── docker-compose.yml          # Kafka, Postgres, Airflow services
+├── Dockerfile.airflow          # Custom Airflow image with ML dependencies
+├── requirements.txt            # Python dependencies
+├── models/
+│   ├── xgboost_baseline.json   # Active champion XGBoost model
+│   └── threshold_config.json   # Cost-calibrated threshold configuration
+├── data/
+│   ├── creditcard.csv          # Raw transaction data (gitignored / DVC tracked)
+│   ├── feature_store/          # Versioned Parquet feature tables
+│   └── raw_zone/               # Partitioned Parquet data lake
+├── reports/
+│   └── data_drift_report.html  # Evidently visual drift diagnostic report
+├── src/
+│   ├── eda/                    # Exploratory analysis, imbalance, and cost matrix
+│   ├── pipeline/               # Training pipeline, evaluation, and registry gating
+│   ├── features/               # Shared feature engineering & feature store
+│   ├── streaming/              # Kafka replay producer and raw lake consumer
+│   ├── serving/                # Real-time scoring consumer and FastAPI service
+│   ├── monitoring/             # Unsupervised drift detection with Evidently
+│   └── orchestration/          # Airflow retraining DAG definitions
+└── tests/                      # 135 unit and integration tests
 ```
 
-## Key Findings (Phase 1)
+---
 
-- **Fraud rate**: 0.1727% (492 frauds out of 284,807 transactions)
-- **Imbalance ratio**: 577.9:1 (legitimate to fraudulent)
-- **Naive baseline accuracy**: 99.83% — completely useless despite the number
-- **Cost matrix**: FN=$122.21 (missed fraud), FP=$10.00 (customer friction), ratio 12.2:1
-- **Top discriminating features**: V17, V14, V12, V10, V16 (by effect size)
-- **Amount outliers**: Higher fraud rate among outliers (0.29% vs 0.16%) — signal, not noise
+## License
+
+MIT License.

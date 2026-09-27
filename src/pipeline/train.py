@@ -48,11 +48,13 @@ def evaluate_and_gate_candidate(
     candidate_auc_pr: float,
     client: MlflowClient,
     model_name: str = "fraudstream-xgboost",
+    min_improvement: float = 1e-4,
 ) -> dict:
     """Compare candidate model against current Production model.
 
-    Promotes candidate to Production only if candidate AUC-PR is strictly superior.
-    Archives previous Production model upon promotion.
+    Promotes candidate to Production only if candidate AUC-PR is strictly superior
+    by at least min_improvement (default: 1e-4), protecting against floating-point
+    jitter and retraining noise. Archives previous Production model upon promotion.
     """
     prod_versions = [
         mv for mv in client.search_model_versions(f"name='{model_name}'")
@@ -77,6 +79,7 @@ def evaluate_and_gate_candidate(
             "candidate_auc_pr": candidate_auc_pr,
             "previous_production_version": None,
             "previous_production_auc_pr": None,
+            "min_improvement": min_improvement,
         }
 
     current_prod = prod_versions[0]
@@ -85,7 +88,7 @@ def evaluate_and_gate_candidate(
     if current_prod_auc_pr is None:
         current_prod_auc_pr = float(current_prod.tags.get("auc_pr", 0.0))
 
-    if candidate_auc_pr > current_prod_auc_pr:
+    if candidate_auc_pr > (current_prod_auc_pr + min_improvement):
         # Strictly superior: Archive old production, promote candidate
         client.transition_model_version_stage(
             name=model_name,
@@ -99,7 +102,8 @@ def evaluate_and_gate_candidate(
         )
         print(
             f"[PROMOTION] Candidate v{candidate_version} (AUC-PR: {candidate_auc_pr:.6f}) "
-            f"strictly beat Production v{current_prod.version} (AUC-PR: {current_prod_auc_pr:.6f}). "
+            f"strictly beat Production v{current_prod.version} (AUC-PR: {current_prod_auc_pr:.6f}) "
+            f"by margin >= {min_improvement:.1e}. "
             f"v{candidate_version} promoted to Production; v{current_prod.version} moved to Archived."
         )
         return {
@@ -109,11 +113,13 @@ def evaluate_and_gate_candidate(
             "candidate_auc_pr": candidate_auc_pr,
             "previous_production_version": str(current_prod.version),
             "previous_production_auc_pr": current_prod_auc_pr,
+            "min_improvement": min_improvement,
         }
     else:
         print(
             f"[GATE REJECTED] Candidate v{candidate_version} (AUC-PR: {candidate_auc_pr:.6f}) "
-            f"did not beat Production v{current_prod.version} (AUC-PR: {current_prod_auc_pr:.6f}). "
+            f"did not beat Production v{current_prod.version} (AUC-PR: {current_prod_auc_pr:.6f}) "
+            f"by required margin >= {min_improvement:.1e}. "
             f"Candidate remains in Staging."
         )
         return {
@@ -123,6 +129,7 @@ def evaluate_and_gate_candidate(
             "candidate_auc_pr": candidate_auc_pr,
             "current_production_version": str(current_prod.version),
             "current_production_auc_pr": current_prod_auc_pr,
+            "min_improvement": min_improvement,
         }
 
 
@@ -132,6 +139,7 @@ def register_and_gate_model(
     auc_pr: float,
     model_name: str = "fraudstream-xgboost",
     tracking_uri: str | None = None,
+    min_improvement: float = 1e-4,
 ) -> dict:
     """Register model artifact from run_id into MLflow Model Registry and gate."""
     uri = tracking_uri or _get_mlflow_uri()
@@ -172,6 +180,7 @@ def register_and_gate_model(
         candidate_auc_pr=auc_pr,
         client=client,
         model_name=model_name,
+        min_improvement=min_improvement,
     )
     return gate_result
 
@@ -223,8 +232,12 @@ def train_autoencoder(
     run_name: str = "autoencoder",
 ):
     """Train Keras autoencoder strictly on legitimate (Class=0) training transactions."""
-    import tensorflow as tf
-    from tensorflow import keras
+    try:
+        import tensorflow as tf
+        from tensorflow import keras
+    except ImportError:
+        print("  TensorFlow not installed. Autoencoder training skipped.")
+        return None
 
     keras.utils.set_random_seed(42)
 
@@ -274,6 +287,8 @@ def compute_reconstruction_error(
     X: pd.DataFrame,
 ) -> np.ndarray:
     """Compute per-sample reconstruction MSE as anomaly score."""
+    if autoencoder is None:
+        return np.zeros(len(X), dtype=np.float32)
     X_np = X.values.astype(np.float32)
     X_reconstructed = autoencoder.predict(X_np, verbose=0)
     mse = np.mean((X_np - X_reconstructed) ** 2, axis=1)
@@ -321,10 +336,10 @@ def train_ensemble_xgboost(
     return model
 
 
-def run_training_pipeline():
-    """Execute complete Phase 2 training, evaluation, and bootstrap analysis."""
+def run_training_pipeline(auto_gate: bool = True) -> dict:
+    """Execute complete training, evaluation, and bootstrap analysis."""
     print("=" * 70)
-    print("  FRAUDSTREAM PHASE 2: TRAINING PIPELINE")
+    print("  FRAUDSTREAM: MODEL TRAINING PIPELINE")
     print("=" * 70)
 
     print("\n[1/10] Loading dataset...")
@@ -360,120 +375,139 @@ def run_training_pipeline():
     print(f"  EXCLUDED from autoencoder training: {n_train_fraud} fraud + ALL test data")
 
     autoencoder = train_autoencoder(X_train_legit)
-    print(f"  Autoencoder trained.")
+    if autoencoder is not None:
+        print(f"  Autoencoder trained.")
 
-    print("\n[6/10] Computing reconstruction errors...")
-    recon_error_train = compute_reconstruction_error(autoencoder, X_train)
-    recon_error_test = compute_reconstruction_error(autoencoder, X_test)
+        print("\n[6/10] Computing reconstruction errors...")
+        recon_error_train = compute_reconstruction_error(autoencoder, X_train)
+        recon_error_test = compute_reconstruction_error(autoencoder, X_test)
 
-    train_fraud_mask = y_train == 1
-    re_legit_mean = float(recon_error_train[train_legit_mask].mean())
-    re_fraud_mean = float(recon_error_train[train_fraud_mask].mean()) if train_fraud_mask.sum() > 0 else 0.0
-    print(f"  Recon error (train legit): mean={re_legit_mean:.6f}")
-    print(f"  Recon error (train fraud): mean={re_fraud_mean:.6f}")
-    print(f"  Ratio (fraud/legit):       {re_fraud_mean/re_legit_mean:.2f}x" if re_legit_mean > 0 else "")
+        train_fraud_mask = y_train == 1
+        re_legit_mean = float(recon_error_train[train_legit_mask].mean())
+        re_fraud_mean = float(recon_error_train[train_fraud_mask].mean()) if train_fraud_mask.sum() > 0 else 0.0
+        print(f"  Recon error (train legit): mean={re_legit_mean:.6f}")
+        print(f"  Recon error (train fraud): mean={re_fraud_mean:.6f}")
+        print(f"  Ratio (fraud/legit):       {re_fraud_mean/re_legit_mean:.2f}x" if re_legit_mean > 0 else "")
 
-    test_legit_mask_test = y_test == 0
-    test_fraud_mask_test = y_test == 1
-    re_test_legit = float(recon_error_test[test_legit_mask_test].mean())
-    re_test_fraud = float(recon_error_test[test_fraud_mask_test].mean()) if test_fraud_mask_test.sum() > 0 else 0.0
-    print(f"  Recon error (test legit):  mean={re_test_legit:.6f}")
-    print(f"  Recon error (test fraud):  mean={re_test_fraud:.6f}")
+        test_legit_mask_test = y_test == 0
+        test_fraud_mask_test = y_test == 1
+        re_test_legit = float(recon_error_test[test_legit_mask_test].mean())
+        re_test_fraud = float(recon_error_test[test_fraud_mask_test].mean()) if test_fraud_mask_test.sum() > 0 else 0.0
+        print(f"  Recon error (test legit):  mean={re_test_legit:.6f}")
+        print(f"  Recon error (test fraud):  mean={re_test_fraud:.6f}")
 
-    print("\n[7/10] Training ensemble XGBoost (features + recon error)...")
-    ensemble_model = train_ensemble_xgboost(
-        X_train, y_train, recon_error_train, spw
-    )
-    X_test_augmented = X_test.copy()
-    X_test_augmented["recon_error"] = recon_error_test
-    ensemble_prob_test = ensemble_model.predict_proba(X_test_augmented)[:, 1]
-    print(f"  Ensemble XGBoost trained. Test predictions computed.")
+        print("\n[7/10] Training ensemble XGBoost (features + recon error)...")
+        ensemble_model = train_ensemble_xgboost(
+            X_train, y_train, recon_error_train, spw
+        )
+        X_test_augmented = X_test.copy()
+        X_test_augmented["recon_error"] = recon_error_test
+        ensemble_prob_test = ensemble_model.predict_proba(X_test_augmented)[:, 1]
+        print(f"  Ensemble XGBoost trained. Test predictions computed.")
 
-    print("\n[8/10] Computing evaluation metrics...")
-    cost_matrix = CostMatrix()
-    cost_matrix.calibrate_from_data(df)
-    print(f"  Cost matrix: FN=${cost_matrix.fn_cost:.2f}, FP=${cost_matrix.fp_cost:.2f}, "
-          f"ratio={cost_matrix.cost_ratio:.1f}:1")
+        print("\n[8/10] Computing evaluation metrics...")
+        cost_matrix = CostMatrix()
+        cost_matrix.calibrate_from_data(df)
+        print(f"  Cost matrix: FN=${cost_matrix.fn_cost:.2f}, FP=${cost_matrix.fp_cost:.2f}, "
+              f"ratio={cost_matrix.cost_ratio:.1f}:1")
 
-    xgb_metrics = compute_metrics(y_test, xgb_prob_test)
-    print(f"\n  XGBoost Baseline:")
-    print(f"    AUC-PR:  {xgb_metrics['auc_pr']:.6f}")
-    print(f"    AUC-ROC: {xgb_metrics['auc_roc']:.6f}")
+        xgb_metrics = compute_metrics(y_test, xgb_prob_test)
+        print(f"\n  XGBoost Baseline:")
+        print(f"    AUC-PR:  {xgb_metrics['auc_pr']:.6f}")
+        print(f"    AUC-ROC: {xgb_metrics['auc_roc']:.6f}")
 
-    ens_metrics = compute_metrics(y_test, ensemble_prob_test)
-    print(f"\n  Ensemble (XGBoost + recon error):")
-    print(f"    AUC-PR:  {ens_metrics['auc_pr']:.6f}")
-    print(f"    AUC-ROC: {ens_metrics['auc_roc']:.6f}")
+        ens_metrics = compute_metrics(y_test, ensemble_prob_test)
+        print(f"\n  Ensemble (XGBoost + recon error):")
+        print(f"    AUC-PR:  {ens_metrics['auc_pr']:.6f}")
+        print(f"    AUC-ROC: {ens_metrics['auc_roc']:.6f}")
 
-    data_dir = Path(__file__).resolve().parent.parent.parent / "data"
-    data_dir.mkdir(exist_ok=True)
-    pred_path = data_dir / "test_predictions.csv"
-    pd.DataFrame({
-        "y_true": y_test.values,
-        "xgboost_prob": xgb_prob_test,
-        "ensemble_prob": ensemble_prob_test,
-    }).to_csv(pred_path, index=False)
-    print(f"  Test predictions saved to: {pred_path}")
+        data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        data_dir.mkdir(exist_ok=True)
+        pred_path = data_dir / "test_predictions.csv"
+        pd.DataFrame({
+            "y_true": y_test.values,
+            "xgboost_prob": xgb_prob_test,
+            "ensemble_prob": ensemble_prob_test,
+        }).to_csv(pred_path, index=False)
+        print(f"  Test predictions saved to: {pred_path}")
 
-    print("\n[8b/10] Running 1,000 paired bootstrap iterations...")
-    bootstrap_res = bootstrap_auc_pr_comparison(
-        y_test.values,
-        xgb_prob_test,
-        ensemble_prob_test,
-        name_a="XGBoost Baseline",
-        name_b="Ensemble",
-        n_bootstraps=1000,
-        random_state=42,
-    )
+        print("\n[8b/10] Running 1,000 paired bootstrap iterations...")
+        bootstrap_res = bootstrap_auc_pr_comparison(
+            y_test.values,
+            xgb_prob_test,
+            ensemble_prob_test,
+            name_a="XGBoost Baseline",
+            name_b="Ensemble",
+            n_bootstraps=1000,
+            random_state=42,
+        )
 
-    boot_csv_path = data_dir / "bootstrap_auc_pr_results.csv"
-    pd.DataFrame({
-        "iteration": np.arange(1, 1001),
-        "xgboost_auc_pr": bootstrap_res["raw_scores_a"],
-        "ensemble_auc_pr": bootstrap_res["raw_scores_b"],
-        "diff_auc_pr": bootstrap_res["raw_diffs"],
-    }).to_csv(boot_csv_path, index=False)
-    print(f"  Raw bootstrap samples saved to: {boot_csv_path}")
-    print("\n" + format_bootstrap_report(bootstrap_res))
+        boot_csv_path = data_dir / "bootstrap_auc_pr_results.csv"
+        pd.DataFrame({
+            "iteration": np.arange(1, 1001),
+            "xgboost_auc_pr": bootstrap_res["raw_scores_a"],
+            "ensemble_auc_pr": bootstrap_res["raw_scores_b"],
+            "diff_auc_pr": bootstrap_res["raw_diffs"],
+        }).to_csv(boot_csv_path, index=False)
+        print(f"  Raw bootstrap samples saved to: {boot_csv_path}")
+        print("\n" + format_bootstrap_report(bootstrap_res))
 
-    print("BOOTSTRAP PERCENTILES & DECILES:")
-    print(f"{'Percentile':<12} {'XGBoost AUC-PR':<18} {'Ensemble AUC-PR':<18} {'Diff (XGB - Ens)':<18}")
-    print("-" * 68)
-    percentiles = [2.5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 97.5]
-    for p in percentiles:
-        val_a = float(np.percentile(bootstrap_res["raw_scores_a"], p))
-        val_b = float(np.percentile(bootstrap_res["raw_scores_b"], p))
-        val_d = float(np.percentile(bootstrap_res["raw_diffs"], p))
-        print(f"p{p:<10.1f} {val_a:<18.6f} {val_b:<18.6f} {val_d:<+18.6f}")
+        print("BOOTSTRAP PERCENTILES & DECILES:")
+        print(f"{'Percentile':<12} {'XGBoost AUC-PR':<18} {'Ensemble AUC-PR':<18} {'Diff (XGB - Ens)':<18}")
+        print("-" * 68)
+        percentiles = [2.5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 97.5]
+        for p in percentiles:
+            val_a = float(np.percentile(bootstrap_res["raw_scores_a"], p))
+            val_b = float(np.percentile(bootstrap_res["raw_scores_b"], p))
+            val_d = float(np.percentile(bootstrap_res["raw_diffs"], p))
+            print(f"p{p:<10.1f} {val_a:<18.6f} {val_b:<18.6f} {val_d:<+18.6f}")
 
-    print("\nSAMPLE RAW BOOTSTRAP ITERATIONS (first 10 of 1,000):")
-    print(f"{'Iter':<6} {'XGBoost':<14} {'Ensemble':<14} {'Diff (XGB - Ens)':<16}")
-    print("-" * 52)
-    for i in range(10):
-        print(f"#{i+1:<5} {bootstrap_res['raw_scores_a'][i]:<14.6f} {bootstrap_res['raw_scores_b'][i]:<14.6f} {bootstrap_res['raw_diffs'][i]:<+16.6f}")
+        print("\nSAMPLE RAW BOOTSTRAP ITERATIONS (first 10 of 1,000):")
+        print(f"{'Iter':<6} {'XGBoost':<14} {'Ensemble':<14} {'Diff (XGB - Ens)':<16}")
+        print("-" * 52)
+        for i in range(10):
+            print(f"#{i+1:<5} {bootstrap_res['raw_scores_a'][i]:<14.6f} {bootstrap_res['raw_scores_b'][i]:<14.6f} {bootstrap_res['raw_diffs'][i]:<+16.6f}")
 
-    if bootstrap_res["statistically_significant"]:
-        if bootstrap_res["diff"]["ci_lower"] > 0:
+        if bootstrap_res["statistically_significant"]:
+            if bootstrap_res["diff"]["ci_lower"] > 0:
+                best_name = "XGBoost Baseline"
+                best_model = xgb_model
+                best_prob = xgb_prob_test
+                best_metrics = xgb_metrics
+                selection_reason = "XGBoost is statistically significantly superior (95% CI > 0)."
+            else:
+                best_name = "Ensemble"
+                best_model = ensemble_model
+                best_prob = ensemble_prob_test
+                best_metrics = ens_metrics
+                selection_reason = "Ensemble is statistically significantly superior (95% CI < 0)."
+        else:
             best_name = "XGBoost Baseline"
             best_model = xgb_model
             best_prob = xgb_prob_test
             best_metrics = xgb_metrics
-            selection_reason = "XGBoost is statistically significantly superior (95% CI > 0)."
-        else:
-            best_name = "Ensemble"
-            best_model = ensemble_model
-            best_prob = ensemble_prob_test
-            best_metrics = ens_metrics
-            selection_reason = "Ensemble is statistically significantly superior (95% CI < 0)."
+            selection_reason = (
+                "Models are statistically indistinguishable (95% CI spans 0). "
+                "Selected XGBoost Baseline via Occam's razor (simpler deployment, lower latency)."
+            )
     else:
+        print("\n[6/10] Autoencoder not available. Evaluating XGBoost Baseline champion directly...")
+        print("\n[8/10] Computing evaluation metrics...")
+        cost_matrix = CostMatrix()
+        cost_matrix.calibrate_from_data(df)
+        print(f"  Cost matrix: FN=${cost_matrix.fn_cost:.2f}, FP=${cost_matrix.fp_cost:.2f}, "
+              f"ratio={cost_matrix.cost_ratio:.1f}:1")
+
+        xgb_metrics = compute_metrics(y_test, xgb_prob_test)
+        print(f"\n  XGBoost Baseline:")
+        print(f"    AUC-PR:  {xgb_metrics['auc_pr']:.6f}")
+        print(f"    AUC-ROC: {xgb_metrics['auc_roc']:.6f}")
+
         best_name = "XGBoost Baseline"
         best_model = xgb_model
         best_prob = xgb_prob_test
         best_metrics = xgb_metrics
-        selection_reason = (
-            "Models are statistically indistinguishable (95% CI spans 0). "
-            "Selected XGBoost Baseline via Occam's razor (simpler deployment, lower latency)."
-        )
+        selection_reason = "XGBoost Baseline selected (production champion model)."
 
     print(f"\n  Final Model Selected: {best_name}")
     print(f"  Selection Rationale:  {selection_reason}")
@@ -520,15 +554,40 @@ def run_training_pipeline():
 
     print(f"\nMLflow tracking URI: {_get_mlflow_uri()}")
 
-    # Register in MLflow Model Registry with promotion gating
+    # Register in MLflow Model Registry (gated or staging-only)
+    registered_version = None
+    gate_res = None
     if isinstance(best_model, xgb.XGBClassifier) and eval_run_id:
-        gate_res = register_and_gate_model(
-            model=best_model,
-            run_id=eval_run_id,
-            auc_pr=best_metrics["auc_pr"],
-            model_name="fraudstream-xgboost",
-        )
-        print(f"  Model Registry Promotion: {gate_res['action'].upper()} ({gate_res['reason']})")
+        if auto_gate:
+            gate_res = register_and_gate_model(
+                model=best_model,
+                run_id=eval_run_id,
+                auc_pr=best_metrics["auc_pr"],
+                model_name="fraudstream-xgboost",
+            )
+            registered_version = gate_res.get("promoted_version")
+            print(f"  Model Registry Promotion: {gate_res['action'].upper()} ({gate_res['reason']})")
+        else:
+            client = MlflowClient(tracking_uri=_get_mlflow_uri())
+            try:
+                client.create_registered_model("fraudstream-xgboost")
+            except Exception:
+                pass
+            artifact_uri = f"runs:/{eval_run_id}/model"
+            mv = client.create_model_version(
+                name="fraudstream-xgboost",
+                source=artifact_uri,
+                run_id=eval_run_id,
+                tags={"auc_pr": str(best_metrics["auc_pr"])},
+            )
+            client.set_model_version_tag("fraudstream-xgboost", str(mv.version), "auc_pr", str(best_metrics["auc_pr"]))
+            client.transition_model_version_stage(
+                name="fraudstream-xgboost",
+                version=str(mv.version),
+                stage="Staging",
+            )
+            registered_version = str(mv.version)
+            print(f"  [REGISTRY] Candidate registered: Version {registered_version} in Staging (AUC-PR: {best_metrics['auc_pr']:.6f}).")
 
     # Serialize model and threshold for serving
     models_dir = Path(__file__).resolve().parent.parent.parent / "models"
@@ -553,6 +612,12 @@ def run_training_pipeline():
     print(f"  Threshold: {threshold_config['optimal_threshold']}")
 
     print("Pipeline complete.")
+    return {
+        "candidate_version": registered_version,
+        "auc_pr": float(best_metrics["auc_pr"]),
+        "run_id": eval_run_id,
+        "gate_result": gate_res,
+    }
 
 
 if __name__ == "__main__":

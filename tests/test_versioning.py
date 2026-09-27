@@ -176,6 +176,36 @@ class TestPromotionGatingLogic:
         assert result["reason"] == "not_strictly_superior"
         mock_mlflow_client.transition_model_version_stage.assert_not_called()
 
+    def test_floating_point_tie_within_epsilon_is_rejected(self, mock_mlflow_client):
+        """Verify that retraining on identical data with floating-point jitter (<1e-4) is rejected."""
+        from src.pipeline.train import evaluate_and_gate_candidate
+
+        current_prod = MagicMock()
+        current_prod.version = "1"
+        current_prod.current_stage = "Production"
+        current_prod.run_id = "run-prod-001"
+        current_prod.tags = {}
+
+        prod_run = MagicMock()
+        prod_run.data.metrics = {"auc_pr": 0.7995861951404674}
+        mock_mlflow_client.get_run.return_value = prod_run
+        mock_mlflow_client.search_model_versions.return_value = [current_prod]
+
+        # Candidate version 2 with floating-point jitter difference ~2e-16
+        candidate_jitter = 0.7995861951404676
+        result = evaluate_and_gate_candidate(
+            candidate_version="2",
+            candidate_auc_pr=candidate_jitter,
+            client=mock_mlflow_client,
+            model_name="fraudstream-xgboost",
+            min_improvement=1e-4,
+        )
+
+        assert result["action"] == "rejected"
+        assert result["reason"] == "not_strictly_superior"
+        assert result["promoted_version"] is None
+        mock_mlflow_client.transition_model_version_stage.assert_not_called()
+
     def test_archiving_preserves_registry_record(self):
         """Verify that archived model versions are not deleted from registry search."""
         from mlflow.tracking import MlflowClient
